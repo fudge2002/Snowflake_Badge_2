@@ -93,6 +93,11 @@ with st.form("order-form", clear_on_submit=True):
             st.success(f"Order saved for **{name.strip()}** → *{ingredients_str}* "
                        f"({'FILLED' if order_filled else 'NOT filled'})")
 
+#new sectin api
+smoothiefroot_response = requests.get("https://my.smoothiefroot.com/api/fruit/watermelon")
+sf_df = st.dataframe(data=smoothiefroot_response.json(),use_container_width=True)
+
+
 st.subheader("📦 Current Orders")
 orders_df = fetch_orders()
 st.dataframe(
@@ -100,11 +105,6 @@ st.dataframe(
     use_container_width=True,
     hide_index=True
 )
-#new sectin api
-smoothiefroot_response = requests.get("https://my.smoothiefroot.com/api/fruit/watermelon")
-sf_df = st.dataframe(data=smoothiefroot_response.json(),use_container_width=True)
-
-
 
 #grader looking for
 with st.expander("What does the grader check?"):
