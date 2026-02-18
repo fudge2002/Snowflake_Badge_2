@@ -12,7 +12,7 @@ cnx = st.connection("snowflake")
 session = cnx.session()
 
 
-Load fruit list from Snowflake
+Load fruit_options from Snowflake
 fruit_df = session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS")  # must contain FRUIT_NAME column
 fruit_list = fruit_df.select("FRUIT_NAME").to_pandas()["FRUIT_NAME"].tolist()
 
