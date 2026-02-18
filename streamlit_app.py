@@ -1,145 +1,105 @@
 import streamlit as st
 from snowflake.snowpark.functions import col
+from urllib.parse import quote_plus
 import requests
+
+st.title("🍹 Customize Your Smoothie!")
+st.write("Choose the fruits you want in your custom Smoothie!")
+st.write("Choose up to 5 ingredients:")
 
 # Get Snowpark session inside SniS app
 cnx = st.connection("snowflake")
 session = cnx.session()
 
-st.set_page_config(page_title="Smoothie Maker", page_icon="🥤", layout="centered")
-st.title("🥤 Smoothie Maker")
 
-st.write(
-    "Create smoothie orders and write them to **SMOOTHIES.PUBLIC.ORDERS**. "
-    "The **order of fruits matters** for the lab grader."
+ Load fruit list from Snowflake
+fruit_df = session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS")  # must contain FRUIT_NAME column
+fruit_list = fruit_df.select("FRUIT_NAME").to_pandas()["FRUIT_NAME"].tolist()
+
+# Limit to 5 ingredients
+ingredients_list = st.multiselect(
+    "Choose up to 5 ingredients:",
+    options=fruit_list,
+    max_selections=5
 )
 
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
+# Name input
+name_on_order = st.text_input("Name on Smoothie (saved as NAME_ON_ORDER)")
 
-def load_fruits():
-    rows = session.sql("""
-        SELECT FRUIT_NAME
-        FROM SMOOTHIES.PUBLIC.FRUIT_OPTIONS
-        ORDER BY FRUIT_NAME
-    """).collect()
-    return [r[0] for r in rows]
+# Build space-separated string (no commas, no 'and')
+ingredients_string = " ".join(ingredients_list) if ingredients_list else ""
 
-def format_ingredients(selected):
-    if not selected:
-        return ""
-    if len(selected) == 1:
-        return selected[0]
-    if len(selected) == 2:
-        return f"{selected[0]} and {selected[1]}"
-    return f"{', '.join(selected[:-1])} and {selected[-1]}"
+# Preview
+st.caption("Ingredients Preview:")
+st.code(ingredients_string if ingredients_string else "(no ingredients selected yet)")
 
-def insert_order(name: str, ingredients: str, filled: bool):
-    name_sql = name.replace("'", "''")
-    ing_sql  = ingredients.replace("'", "''")
-    filled_sql = "TRUE" if filled else "FALSE"
+# -----------------------------
+# 🍊 Nutrition info from SmoothieFroot API
+# -----------------------------
 
-    session.sql(f"""
-        INSERT INTO SMOOTHIES.PUBLIC.ORDERS
-        (NAME_ON_ORDER, INGREDIENTS, ORDER_FILLED, ORDER_TS)
-        VALUES ('{name_sql}', '{ing_sql}', {filled_sql}, CURRENT_TIMESTAMP())
-    """).collect()
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_smoothiefroot(fruit_name: str):
+    """
+    Fetch nutrition info for a single fruit from SmoothieFroot API.
+    Returns JSON (dict or list) or raises on HTTP errors.
+    """
+    url = f"https://my.smoothiefroot.com/api/fruit/{quote_plus(fruit_name.lower())}"
+    resp = requests.get(url, timeout=10)
+    # Raise for non-2xx so caller can handle 404 nicely
+    resp.raise_for_status()
+    return resp.json()
 
-def fetch_orders():
-    return session.sql("""
-        SELECT
-          NAME_ON_ORDER,
-          INGREDIENTS,
-          ORDER_FILLED,
-          ORDER_TS,
-          HASH(INGREDIENTS) AS HASH_VALUE
-        FROM SMOOTHIES.PUBLIC.ORDERS
-        ORDER BY ORDER_TS DESC
-    """).to_pandas()
+if ingredients_list:
+    st.divider()
+    st.subheader("🍏 Nutrition Information")
+    for fruit in ingredients_list:
+        st.markdown(f"**{fruit} Nutrition Information**")
+        try:
+            data = fetch_smoothiefroot(fruit)
+            # data can be a dict or a list of dicts; Streamlit handles either
+            st.dataframe(data, use_container_width=True)
+        except requests.HTTPError as http_err:
+            # Many fruits in the lab list won’t exist in the API — show friendly note
+            if getattr(http_err, "response", None) and http_err.response.status_code == 404:
+                st.info(f"Sorry, **{fruit}** is not in the SmoothieFroot database.")
+            else:
+                st.error(f"Could not fetch nutrition for **{fruit}** (HTTP error).")
+        except Exception as e:
+            st.error(f"Unexpected error fetching data for **{fruit}**.")
+else:
+    st.info("Select one or more fruits above to see their nutrition information.")
 
-# -------------------------------------------------------------------
-# Order Form
-# -------------------------------------------------------------------
+# -----------------------------
+# 📝 Submit order
+# -----------------------------
+submit = st.button("Submit Order")
 
-with st.form("order-form", clear_on_submit=True):
-    name = st.text_input("Name on order", help="Enter the person's name (e.g., Kevin, Divya, Xi)")
-    fruits = load_fruits()
+if submit:
+    if not ingredients_list:
+        st.error("Please choose at least one ingredient.")
+    elif len(ingredients_string) > 200:
+        st.error("Ingredients exceed 200 characters.")
+    elif not name_on_order.strip():
+        st.error("Please provide a name for the smoothie.")
+    elif len(name_on_order.strip()) > 100:
+        st.error("Name on order exceeds 100 characters.")
+    else:
+        # Escape quotes
+        safe_ingredients = ingredients_string.replace("'", "''")
+        safe_name = name_on_order.strip().replace("'", "''")
 
-    st.caption("Select fruits **in the order you want them recorded**.")
-    selected = st.multiselect(
-        "Choose fruits (order matters)",
-        fruits,
-        default=[],
-        help="Pick in the exact order required by the lab."
-    )
+        try:
+            # Next ORDER_UID without sequences
+            next_id = session.sql(
+                "SELECT COALESCE(MAX(order_uid), 0) + 1 AS next_id FROM SMOOTHIES.PUBLIC.ORDERS"
+            ).collect()[0]["NEXT_ID"]
 
-    order_filled = st.checkbox("Mark order as FILLED", value=False)
-    submitted = st.form_submit_button("Submit Order")
-
-    if submitted:
-        if not name.strip():
-            st.error("Please provide a name on the order.")
-        elif len(selected) == 0:
-            st.error("Please select at least one fruit.")
-        else:
-            ingredients_str = format_ingredients(selected)
-            insert_order(name.strip(), ingredients_str, order_filled)
-
-            st.success(
-                f"Order saved for **{name.strip()}** → *{ingredients_str}* "
-                f"({'FILLED' if order_filled else 'NOT filled'})"
-            )
-
-# -------------------------------------------------------------------
-# 🍎 Store selected fruits so the UI updates live
-# -------------------------------------------------------------------
-
-if "selected_fruits" not in st.session_state:
-    st.session_state.selected_fruits = []
-
-st.session_state.selected_fruits = selected
-
-# -------------------------------------------------------------------
-# 🍉 Nutrition Info for Selected Fruits
-# -------------------------------------------------------------------
-
-if st.session_state.selected_fruits:
-    st.subheader("🍉 Nutrition Information for Selected Fruits")
-
-    for fruit in st.session_state.selected_fruits:
-        st.markdown(f"### {fruit} Nutrition Information")
-        
-        api_url = f"https://my.smoothiefroot.com/api/fruit/{fruit}"
-        response = requests.get(api_url)
-
-        if response.ok:
-            st.dataframe(response.json(), use_container_width=True)
-        else:
-            st.error(f"Could not load data for {fruit}")
-
-# -------------------------------------------------------------------
-# Orders Table
-# -------------------------------------------------------------------
-
-st.subheader("📦 Current Orders")
-orders_df = fetch_orders()
-
-st.dataframe(
-    orders_df,
-    use_container_width=True,
-    hide_index=True
-)
-
-# -------------------------------------------------------------------
-# Grader Requirements
-# -------------------------------------------------------------------
-
-with st.expander("What does the grader check?"):
-    st.markdown("""
-- **Kevin**: *Apples, Lime and Ximenia* — **NOT filled**
-- **Divya**: *Dragon Fruit, Guava, Figs, Jackfruit and Blueberries* — **FILLED**
-- **Xi**: *Vanilla Fruit and Nectarine* — **FILLED**
-
-The grader compares `HASH(INGREDIENTS)` for those exact strings and flags pass/fail.
-""")
+            insert_sql = f"""
+                INSERT INTO SMOOTHIES.PUBLIC.ORDERS (order_uid, name_on_order, ingredients)
+                VALUES ({next_id}, '{safe_name}', '{safe_ingredients}');
+            """
+            session.sql(insert_sql).collect()
+            st.success(f"🥤 Order #{next_id} placed for **{safe_name}**!", icon="✅")
+        except Exception as e:
+            st.error("Something went wrong while placing your order. Please try again.")
+            st.exception(e)
