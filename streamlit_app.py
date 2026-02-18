@@ -7,7 +7,7 @@ cnx = st.connection("snowflake")
 session = cnx.session()
 
 smoothiefroot_response = requests.get("https://my.smoothiefroot.com/api/fruit/watermelon")
-st.text(smoothiefroot_response)
+st.text(smoothiefroot_response.json()
 
 st.set_page_config(page_title="Smoothie Maker", page_icon="🥤", layout="centered")
 st.title("🥤 Smoothie Maker")
