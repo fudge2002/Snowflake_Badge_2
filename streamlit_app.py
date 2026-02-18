@@ -1,8 +1,9 @@
 import streamlit as st
-from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark.functions import col
 
-# Get Snowpark session inside SiS app
-session = get_active_session()
+# Get Snowpark session inside SniS app
+cnx = st.connection("snowflake")
+session = cnx.session()
 
 st.set_page_config(page_title="Smoothie Maker", page_icon="🥤", layout="centered")
 st.title("🥤 Smoothie Maker")
