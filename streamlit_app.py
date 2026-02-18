@@ -6,9 +6,6 @@ import requests
 cnx = st.connection("snowflake")
 session = cnx.session()
 
-smoothiefroot_response = requests.get("https://my.smoothiefroot.com/api/fruit/watermelon")
-st.text(smoothiefroot_response.json())
-
 st.set_page_config(page_title="Smoothie Maker", page_icon="🥤", layout="centered")
 st.title("🥤 Smoothie Maker")
 
@@ -103,7 +100,13 @@ st.dataframe(
     use_container_width=True,
     hide_index=True
 )
+#new sectin api
+smoothiefroot_response = requests.get("https://my.smoothiefroot.com/api/fruit/watermelon")
+st.text(smoothiefroot_response.json(),use_container_width=true)
 
+
+
+#grader looking for
 with st.expander("What does the grader check?"):
     st.markdown("""
 - **Kevin**: *Apples, Lime and Ximenia* — **NOT filled**
