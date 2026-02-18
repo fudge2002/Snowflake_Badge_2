@@ -1,9 +1,13 @@
 import streamlit as st
 from snowflake.snowpark.functions import col
+import requests
 
 # Get Snowpark session inside SniS app
 cnx = st.connection("snowflake")
 session = cnx.session()
+
+smoothiefroot_response = requests.get("https://my.smoothiefroot.com/api/fruit/watermelon")
+st.text(smoothiefroot_response)
 
 st.set_page_config(page_title="Smoothie Maker", page_icon="🥤", layout="centered")
 st.title("🥤 Smoothie Maker")
