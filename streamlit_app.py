@@ -14,10 +14,11 @@ st.write(
     "The **order of fruits matters** for the lab grader."
 )
 
-# --- Helpers -----------------------------------------------------------------
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
 
 def load_fruits():
-    # Pull available fruits from FRUIT_OPTIONS (sorted for a nice UX)
     rows = session.sql("""
         SELECT FRUIT_NAME
         FROM SMOOTHIES.PUBLIC.FRUIT_OPTIONS
@@ -26,7 +27,6 @@ def load_fruits():
     return [r[0] for r in rows]
 
 def format_ingredients(selected):
-    """Format the ingredient list in the specific style the grader expects."""
     if not selected:
         return ""
     if len(selected) == 1:
@@ -36,10 +36,10 @@ def format_ingredients(selected):
     return f"{', '.join(selected[:-1])} and {selected[-1]}"
 
 def insert_order(name: str, ingredients: str, filled: bool):
-    # Escape single quotes for SQL
     name_sql = name.replace("'", "''")
     ing_sql  = ingredients.replace("'", "''")
     filled_sql = "TRUE" if filled else "FALSE"
+
     session.sql(f"""
         INSERT INTO SMOOTHIES.PUBLIC.ORDERS
         (NAME_ON_ORDER, INGREDIENTS, ORDER_FILLED, ORDER_TS)
@@ -58,7 +58,9 @@ def fetch_orders():
         ORDER BY ORDER_TS DESC
     """).to_pandas()
 
-# --- UI ----------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Order Form
+# -------------------------------------------------------------------
 
 with st.form("order-form", clear_on_submit=True):
     name = st.text_input("Name on order", help="Enter the person's name (e.g., Kevin, Divya, Xi)")
@@ -83,28 +85,38 @@ with st.form("order-form", clear_on_submit=True):
         else:
             ingredients_str = format_ingredients(selected)
             insert_order(name.strip(), ingredients_str, order_filled)
+
             st.success(
                 f"Order saved for **{name.strip()}** → *{ingredients_str}* "
                 f"({'FILLED' if order_filled else 'NOT filled'})"
             )
 
 # -------------------------------------------------------------------
-# 🍎 NEW SECTION — Nutrition info for selected fruits
+# 🍎 Store selected fruits so the UI updates live
 # -------------------------------------------------------------------
 
-if selected:
+if "selected_fruits" not in st.session_state:
+    st.session_state.selected_fruits = []
+
+st.session_state.selected_fruits = selected
+
+# -------------------------------------------------------------------
+# 🍉 Nutrition Info for Selected Fruits
+# -------------------------------------------------------------------
+
+if st.session_state.selected_fruits:
     st.subheader("🍉 Nutrition Information for Selected Fruits")
 
-    for fruit_chosen in selected:
-        st.markdown(f"### {fruit_chosen} Nutrition Information")
-
-        api_url = f"https://my.smoothiefroot.com/api/fruit/{fruit_chosen}"
+    for fruit in st.session_state.selected_fruits:
+        st.markdown(f"### {fruit} Nutrition Information")
+        
+        api_url = f"https://my.smoothiefroot.com/api/fruit/{fruit}"
         response = requests.get(api_url)
 
-        if response.status_code == 200:
+        if response.ok:
             st.dataframe(response.json(), use_container_width=True)
         else:
-            st.error(f"Could not load data for {fruit_chosen}")
+            st.error(f"Could not load data for {fruit}")
 
 # -------------------------------------------------------------------
 # Orders Table
@@ -112,6 +124,7 @@ if selected:
 
 st.subheader("📦 Current Orders")
 orders_df = fetch_orders()
+
 st.dataframe(
     orders_df,
     use_container_width=True,
@@ -119,7 +132,7 @@ st.dataframe(
 )
 
 # -------------------------------------------------------------------
-# Grader Expectations
+# Grader Requirements
 # -------------------------------------------------------------------
 
 with st.expander("What does the grader check?"):
