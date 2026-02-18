@@ -1,73 +1,108 @@
 import streamlit as st
 from snowflake.snowpark.functions import col
-from urllib.parse import quote_plus
 import requests
+from urllib.parse import quote_plus
+import pandas as pd   # NEW for Lesson 10 Part 2
 
 st.title("🍹 Customize Your Smoothie!")
 st.write("Choose the fruits you want in your custom Smoothie!")
 st.write("Choose up to 5 ingredients:")
 
-# Get Snowpark session inside SniS app
+# Snowpark session inside SiS
 cnx = st.connection("snowflake")
 session = cnx.session()
 
+# Load FRUIT_OPTIONS with FRUIT_NAME + SEARCH_ON
+my_dataframe = session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS").select(
+    col("FRUIT_NAME"), col("SEARCH_ON")
+)
 
-#Load fruit_options from Snowflake
-fruit_df = session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS")  # must contain FRUIT_NAME column
-fruit_list = fruit_df.select("FRUIT_NAME").to_pandas()["FRUIT_NAME"].tolist()
+# Convert Snowpark DF → Pandas DF
+pd_df = my_dataframe.to_pandas()
 
-# Limit to 5 ingredients
+# Multiselect uses FRUIT_NAME column
 ingredients_list = st.multiselect(
     "Choose up to 5 ingredients:",
-    options=fruit_list,
+    options=pd_df["FRUIT_NAME"].tolist(),
     max_selections=5
 )
 
-# Name input
-name_on_order = st.text_input("Name on Smoothie (saved as NAME_ON_ORDER)")
+# Smoothie name
+name_on_order = st.text_input("Name on Smoothie:")
 
-# Build space-separated string (no commas, no 'and')
+# Build ingredient string
 ingredients_string = " ".join(ingredients_list) if ingredients_list else ""
 
-# Preview
 st.caption("Ingredients Preview:")
 st.code(ingredients_string if ingredients_string else "(no ingredients selected yet)")
 
 # -----------------------------
-# 🍊 Nutrition info from SmoothieFroot API
+# 🍏 SmoothieFroot API Lookup using SEARCH_ON
 # -----------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_smoothiefroot(fruit_name: str):
-    """
-    Fetch nutrition info for a single fruit from SmoothieFroot API.
-    Returns JSON (dict or list) or raises on HTTP errors.
-    """
     url = f"https://my.smoothiefroot.com/api/fruit/{quote_plus(fruit_name.lower())}"
     resp = requests.get(url, timeout=10)
-    # Raise for non-2xx so caller can handle 404 nicely
     resp.raise_for_status()
     return resp.json()
 
 if ingredients_list:
-    st.divider()
     st.subheader("🍏 Nutrition Information")
-    for fruit in ingredients_list:
-        st.markdown(f"**{fruit} Nutrition Information**")
+    for fruit_chosen in ingredients_list:
+
+        # -----------------------------------------
+        # 1️⃣ Get SEARCH_ON value from pd_df using .loc[]
+        # -----------------------------------------
+        if fruit_chosen in pd_df["FRUIT_NAME"].values:
+            search_on = pd_df.loc[
+                pd_df["FRUIT_NAME"] == fruit_chosen, "SEARCH_ON"
+            ].iloc[0]
+        else:
+            # Fruit not in table → automatically insert it
+            search_on = fruit_chosen
+            session.sql(f"""
+                INSERT INTO SMOOTHIES.PUBLIC.FRUIT_OPTIONS (FRUIT_NAME, SEARCH_ON)
+                VALUES ('{fruit_chosen}', '{fruit_chosen}');
+            """).collect()
+
+        st.subheader(f"{fruit_chosen} Nutrition Information")
+
+        # -----------------------------------------
+        # 2️⃣ Try SmoothieFroot API call
+        # -----------------------------------------
         try:
-            data = fetch_smoothiefroot(fruit)
-            # data can be a dict or a list of dicts; Streamlit handles either
+            data = fetch_smoothiefroot(search_on)
             st.dataframe(data, use_container_width=True)
+
         except requests.HTTPError as http_err:
-            # Many fruits in the lab list won’t exist in the API — show friendly note
-            if getattr(http_err, "response", None) and http_err.response.status_code == 404:
-                st.info(f"Sorry, **{fruit}** is not in the SmoothieFroot database.")
+            # Auto-fix names on 404
+            if http_err.response is not None and http_err.response.status_code == 404:
+
+                # Basic plural → singular fallback
+                if fruit_chosen.endswith("ies"):
+                    fixed = fruit_chosen[:-3] + "y"
+                elif fruit_chosen.endswith("s"):
+                    fixed = fruit_chosen[:-1]
+                else:
+                    fixed = fruit_chosen
+
+                st.info(f"Trying alternate API search for '{fixed}'…")
+
+                # Save corrected SEARCH_ON
+                session.sql(f"""
+                    UPDATE SMOOTHIES.PUBLIC.FRUIT_OPTIONS
+                    SET SEARCH_ON = '{fixed}'
+                    WHERE FRUIT_NAME = '{fruit_chosen}';
+                """).collect()
+
+                try:
+                    data = fetch_smoothiefroot(fixed)
+                    st.dataframe(data, use_container_width=True)
+                except:
+                    st.error(f"Still no data for '{fruit_chosen}'.")
             else:
-                st.error(f"Could not fetch nutrition for **{fruit}** (HTTP error).")
-        except Exception as e:
-            st.error(f"Unexpected error fetching data for **{fruit}**.")
-else:
-    st.info("Select one or more fruits above to see their nutrition information.")
+                st.error(f"API error fetching: {fruit_chosen}")
 
 # -----------------------------
 # 📝 Submit order
@@ -81,25 +116,18 @@ if submit:
         st.error("Ingredients exceed 200 characters.")
     elif not name_on_order.strip():
         st.error("Please provide a name for the smoothie.")
-    elif len(name_on_order.strip()) > 100:
-        st.error("Name on order exceeds 100 characters.")
     else:
-        # Escape quotes
-        safe_ingredients = ingredients_string.replace("'", "''")
+        safe_ing = ingredients_string.replace("'", "''")
         safe_name = name_on_order.strip().replace("'", "''")
 
-        try:
-            # Next ORDER_UID without sequences
-            next_id = session.sql(
-                "SELECT COALESCE(MAX(order_uid), 0) + 1 AS next_id FROM SMOOTHIES.PUBLIC.ORDERS"
-            ).collect()[0]["NEXT_ID"]
+        next_id = session.sql("""
+            SELECT COALESCE(MAX(order_uid), 0) + 1 
+            FROM SMOOTHIES.PUBLIC.ORDERS
+        """).collect()[0][0]
 
-            insert_sql = f"""
-                INSERT INTO SMOOTHIES.PUBLIC.ORDERS (order_uid, name_on_order, ingredients)
-                VALUES ({next_id}, '{safe_name}', '{safe_ingredients}');
-            """
-            session.sql(insert_sql).collect()
-            st.success(f"🥤 Order #{next_id} placed for **{safe_name}**!", icon="✅")
-        except Exception as e:
-            st.error("Something went wrong while placing your order. Please try again.")
-            st.exception(e)
+        session.sql(f"""
+            INSERT INTO SMOOTHIES.PUBLIC.ORDERS (order_uid, name_on_order, ingredients)
+            VALUES ({next_id}, '{safe_name}', '{safe_ing}');
+        """).collect()
+
+        st.success(f"🥤 Order #{next_id} placed for **{safe_name}**!", icon="🎉")
